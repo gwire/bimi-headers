@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+
+## PoC implementation of BIMI draft
+##    https://www.ietf.org/archive/id/draft-brand-indicators-for-message-identification-05.html#name-receiver-actions
+##
+## TODO:
+## - implement -only switches
+## - svg validation
+## - pem validation
+## - disk cache
+
+import argparse
+import base64
+import email
+from email.header import Header
+import textwrap
+import hashlib 
+import gzip
+import re
+import requests
+from importlib.metadata import version
+import dns.resolver
+from publicsuffix2 import PublicSuffixList,get_public_suffix
+
+parser = argparse.ArgumentParser(
+        prog='bimi-check',
+        description='Generate BIMI email headers for a given domain',
+        epilog='A successful pass result for DMARC is assumed.')
+parser.add_argument("domain", help="The author domain")
+parser.add_argument("--selector", help="The selector (default: default)", default="default")
+parser.add_argument("--authserv-id", help="Authetication authserv-id (default: mailserver.local)", default="mailserver.local")
+parser.add_argument("--bimi-auth-only", action='store_true', help="Only return the bimi content of Authentication-Results")
+parser.add_argument("--indicator-only", action='store_true', help="Only return the content of BIMI-Indicator")
+parser.add_argument("--location-only", action='store_true', help="Only return the content of BIMI-Location")
+parser.add_argument("--tab-headers", action='store_true', help="Use tab instead of space for newlines")
+args = parser.parse_args()
+
+## https://stackoverflow.com/questions/11887762/how-do-i-compare-version-numbers-in-python
+def versiontuple(v):
+    return tuple(map(int, (v.split("."))))
+
+def get_org_domain(domain):
+    psl = PublicSuffixList()
+    org_domain = psl.get_public_suffix(domain, strict=True)
+    return(org_domain)
+
+def is_public_hostname(hostname):
+    ##  TODO: check for NS?
+    psl = PublicSuffixList()
+    if psl.get_public_suffix(hostname, strict=True):
+        return True
+    else:
+        return False
+
+def is_valid_tinysvg(svg):
+    return true
+
+def gunzip(bytes):
+    if bytes[2:] == b'\x1f\x8b':
+        return(gzip.decompress(bytes))
+    else:
+        return(bytes)
+
+def get_tiny_svg(url):
+    if not url.startswith("https://"):
+        return(False)
+    r = requests.get(url, timeout=10, verify=True)
+    downloaded_svg = gunzip(r.content)
+    if len(downloaded_svg) > 32768:
+        return(False)
+    else:
+        return(downloaded_svg)
+
+def tag_value(tagval_string):
+    ## Turn DKIM-style TXT records into dict
+    txt_config = tagval_string.decode("utf-8").split(";")
+    txt_config = [item for item in txt_config if "=" in item]
+    d = dict(bytes(value,'utf-8').strip().split(b'=',1) for value in txt_config)
+    d = { k.decode("utf-8") : v.decode("utf-8") for k,v in d.items() }
+    return(d)
+
+def dmarc_policy(domain):
+    if not is_public_hostname(domain):
+        return(False)
+    try:
+        if versiontuple(version('dnspython')) < versiontuple("2.0.0"):
+            answers = dns.resolver.query('_dmarc.' + domain, 'TXT', raise_on_no_answer=False)
+        else:
+            answers = dns.resolver.resolve('_dmarc.' + domain, 'TXT', raise_on_no_answer=False)
+        for rdata in answers:
+            for txt_string in rdata.strings:
+                if txt_string.decode("utf-8").startswith("v=DMARC1"):
+                    d = tag_value(txt_string)
+                    if not "pct" in d:
+                        d["pct"] = "100"
+                    if not "sp" in d:
+                        d["sp"] = d.get("p")
+                    return(d)
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout) as e:
+        return(False)
+    return(False)
+
+def bimi_assert(domain,selector):
+    if versiontuple(version('dnspython')) < versiontuple("2.0.0"):
+        answers = dns.resolver.query(selector + '._bimi.' + domain, 'TXT', raise_on_no_answer=False)
+    else:
+        answers = dns.resolver.resolve(selector + '._bimi.' + domain, 'TXT', raise_on_no_answer=False)
+    for rdata in answers:
+        for txt_string in rdata.strings:
+            if txt_string.decode("utf-8").startswith("v=BIMI1"):
+                d = tag_value(txt_string)
+                if not "a" in d:
+                    d["a"] = ""
+                if not "l" in d:
+                    d["l"] = ""
+                return(d)
+    org_domain = get_org_domain(domain)
+    if org_domain.casefold() != domain.casefold():
+        return(bimi_assert(org_domain,selector))
+    return(False)
+
+def qualifying_policy(domain):
+    org_domain = get_org_domain(domain)
+    policy = dmarc_policy(domain)
+    if policy:
+        if policy.get("p") not in ["none"]:
+            if policy.get("sp") not in ["none"]:
+                if policy.get("p") in ["quarantine"]:
+                    if policy.get("pct") not in ["100"]:
+                        return(False)
+                if org_domain.casefold() == domain.casefold():
+                    return(True)
+            else:
+                return(False)
+        else:
+            return(False)
+    else:
+        if org_domain.casefold() != domain.casefold():
+            if qualifying_policy(org_domain):
+                return(True)
+    if org_domain.casefold() != domain.casefold():
+        if qualifying_policy(org_domain):
+                return(True)
+    return(False)
+
+def indicator_header(tinysvg):
+    b64=base64.b64encode(tinysvg)
+    bimi_i_header = "BIMI Indicator: "
+    bimi_indicator = '\n'.join(textwrap.wrap(bimi_i_header + b64.decode(), width=77, initial_indent='', subsequent_indent=' '))
+    bimi_indicator = bimi_indicator[len(bimi_i_header):]
+    return(bimi_indicator)
+
+def tab_lines(headers):
+    out = ''
+    sp = iter(headers.splitlines())
+    for x in sp:
+        if x[0] == " ":
+            out = out + "\t" + x[1:] + "\n"
+        else:
+            out = out + x + "\n"
+    return out[:-1]
+
+bimi_result=""
+bimi_comment=""
+tinysvg=False
+bimi_indicator=False
+bimi_location=False
+b=False
+
+if not qualifying_policy(args.domain):
+    bimi_comment = " (DMARC requirements unmet)"
+    bimi_result = "skipped"
+else:
+    b = bimi_assert(args.domain,args.selector)
+    if not b:
+        bimi_result = "none"
+    else:
+        if len(b.get("l")) == 0:
+            bimi_result = "declined"
+        else:
+            tinysvg = get_tiny_svg(b.get("l"))
+            if not tinysvg:
+                bimi_comment = " (problem downloading logo)"
+                bimi_result = "fail"
+            else:
+                bimi_result = "pass"
+                indicator_hash=hashlib.sha256(tinysvg).hexdigest()[-8:]
+
+auth_results = "; bimi=" + bimi_result + bimi_comment + " header.d=" + args.domain
+if not bimi_result == "skipped":
+    auth_results = auth_results + " header.selector=" + args.selector
+if tinysvg:
+    auth_results = auth_results + " policy.indicator-hash=" + indicator_hash
+
+auth_results_full = Header(args.authserv_id + auth_results,maxlinelen=78,header_name="Authentication-Results:").encode()
+
+if b:
+    bimi_location =  "v=BIMI1; l=" + b.get("l") + "; a=" + b.get("a")
+    bimi_location = Header(bimi_location,maxlinelen=78,header_name="BIMI-Location:").encode()
+    if tinysvg:
+        bimi_indicator = indicator_header(tinysvg)
+
+if args.tab_headers:
+    if bimi_indicator:
+        print("BIMI-Indicator: " + tab_lines(bimi_indicator))
+    if bimi_location:
+        print("BIMI-Location: " + tab_lines(bimi_location))
+    print("Authentication-Results: " + tab_lines(auth_results_full))
+else:
+    if bimi_indicator:
+        print("BIMI-Indicator: " + bimi_indicator)
+    if bimi_location:
+        print("BIMI-Location: " + bimi_location)
+    print("Authentication-Results: " + auth_results_full)
