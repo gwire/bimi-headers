@@ -101,22 +101,28 @@ def dmarc_policy(domain):
     return(False)
 
 def bimi_assert(domain,selector):
-    if versiontuple(version('dnspython')) < versiontuple("2.0.0"):
-        answers = dns.resolver.query(selector + '._bimi.' + domain, 'TXT', raise_on_no_answer=False)
-    else:
-        answers = dns.resolver.resolve(selector + '._bimi.' + domain, 'TXT', raise_on_no_answer=False)
-    for rdata in answers:
-        for txt_string in rdata.strings:
-            if txt_string.decode("utf-8").startswith("v=BIMI1"):
-                d = tag_value(txt_string)
-                if not "a" in d:
-                    d["a"] = ""
-                if not "l" in d:
-                    d["l"] = ""
-                return(d)
     org_domain = get_org_domain(domain)
-    if org_domain.casefold() != domain.casefold():
-        return(bimi_assert(org_domain,selector))
+    try:
+        if versiontuple(version('dnspython')) < versiontuple("2.0.0"):
+            answers = dns.resolver.query(selector + '._bimi.' + domain, 'TXT', raise_on_no_answer=False)
+        else:
+            answers = dns.resolver.resolve(selector + '._bimi.' + domain, 'TXT', raise_on_no_answer=False)
+        for rdata in answers:
+            for txt_string in rdata.strings:
+                if txt_string.decode("utf-8").startswith("v=BIMI1"):
+                    d = tag_value(txt_string)
+                    if not "a" in d:
+                        d["a"] = ""
+                    if not "l" in d:
+                        d["l"] = ""
+                    return(d)
+        if org_domain.casefold() == domain.casefold():
+            return(False)
+        else:
+            return(bimi_assert(org_domain,selector))
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout) as e:
+        if org_domain.casefold() != domain.casefold():
+            return(bimi_assert(org_domain,selector))
     return(False)
 
 def qualifying_policy(domain):
