@@ -1,6 +1,10 @@
 # bimi-headers
 A python script to generate BIMI headers
 
+This is an implementation of the 
+[Reciever Actions](https://www.ietf.org/archive/id/draft-brand-indicators-for-message-identification-05.html#name-receiver-actions)
+steps for BIMI email indicators.
+
 ```shell
 $ bimi-headers reddit.com
 BIMI-Indicator: PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiPz4KPCEtLSBHZ
