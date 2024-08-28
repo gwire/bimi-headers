@@ -23,9 +23,9 @@ import dns.resolver
 from publicsuffix2 import PublicSuffixList,get_public_suffix
 
 parser = argparse.ArgumentParser(
-        prog='bimi-check',
-        description='Generate BIMI email headers for a given domain',
-        epilog='A successful pass result for DMARC is assumed.')
+    prog='bimi-headers',
+    description='Generate BIMI email headers for a given domain',
+    epilog='A successful pass result for DMARC is assumed.')
 parser.add_argument("domain", help="The author domain")
 parser.add_argument("--selector", help="The selector (default: default)", default="default")
 parser.add_argument("--authserv-id", help="Authetication authserv-id (default: mailserver.local)", default="mailserver.local")
@@ -146,7 +146,7 @@ def qualifying_policy(domain):
                 return(True)
     if org_domain.casefold() != domain.casefold():
         if qualifying_policy(org_domain):
-                return(True)
+            return(True)
     return(False)
 
 def indicator_header(tinysvg):
@@ -171,11 +171,12 @@ bimi_comment=""
 tinysvg=False
 bimi_indicator=False
 bimi_location=False
+indicator_hash=False
 b=False
 
 if not qualifying_policy(args.domain):
-    bimi_comment = " (DMARC requirements unmet)"
     bimi_result = "skipped"
+    bimi_comment = " (DMARC requirements unmet)"
 else:
     b = bimi_assert(args.domain,args.selector)
     if not b:
@@ -186,8 +187,8 @@ else:
         else:
             tinysvg = get_tiny_svg(b.get("l"))
             if not tinysvg:
-                bimi_comment = " (problem downloading logo)"
                 bimi_result = "fail"
+                bimi_comment = " (problem downloading logo)"
             else:
                 bimi_result = "pass"
                 indicator_hash=hashlib.sha256(tinysvg).hexdigest()[-8:]
