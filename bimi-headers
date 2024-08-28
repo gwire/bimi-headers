@@ -168,6 +168,7 @@ def tab_lines(headers):
 
 bimi_result=""
 bimi_comment=""
+policy_authority="none"
 tinysvg=False
 bimi_indicator=False
 bimi_location=False
@@ -197,6 +198,7 @@ auth_results = "; bimi=" + bimi_result + bimi_comment + " header.d=" + args.doma
 if not bimi_result == "skipped":
     auth_results = auth_results + " header.selector=" + args.selector
 if tinysvg:
+    auth_results = auth_results + " policy.authority=" + policy_authority
     auth_results = auth_results + " policy.indicator-hash=" + indicator_hash
 
 auth_results_full = Header(args.authserv_id + auth_results,maxlinelen=78,header_name="Authentication-Results:").encode()
