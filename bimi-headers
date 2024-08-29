@@ -4,35 +4,38 @@
 ##    https://www.ietf.org/archive/id/draft-brand-indicators-for-message-identification-05.html#name-receiver-actions
 ##
 ## TODO:
-## - implement -only switches
-## - svg validation
 ## - pem validation
-## - disk cache
+## - svg validation
 
+import sys
 import argparse
 import base64
 import email
 from email.header import Header
 import textwrap
-import hashlib 
+import hashlib
 import gzip
 import re
 import requests
 from importlib.metadata import version
+from pathlib import Path
+
 import dns.resolver
 from publicsuffix2 import PublicSuffixList,get_public_suffix
 
 parser = argparse.ArgumentParser(
-    prog='bimi-headers',
-    description='Generate BIMI email headers for a given domain',
-    epilog='A successful pass result for DMARC is assumed.')
+        prog='bimi-headers',
+        description='Generate BIMI email headers for a given domain',
+        epilog='A successful pass result for DMARC is assumed.')
 parser.add_argument("domain", help="The author domain")
 parser.add_argument("--selector", help="The selector (default: default)", default="default")
-parser.add_argument("--authserv-id", help="Authetication authserv-id (default: mailserver.local)", default="mailserver.local")
-parser.add_argument("--bimi-auth-only", action='store_true', help="Only return the bimi content of Authentication-Results")
-parser.add_argument("--indicator-only", action='store_true', help="Only return the content of BIMI-Indicator")
-parser.add_argument("--location-only", action='store_true', help="Only return the content of BIMI-Location")
-parser.add_argument("--tab-headers", action='store_true', help="Use tab instead of space for newlines")
+parser.add_argument("--authserv-id", help="Authetication-Results authserv-id (default: mailserver.local)", default="mailserver.local")
+parser.add_argument("--status-only", action='store_true', help="Only return the auth result", default=False)
+parser.add_argument("--bimi-auth-only", action='store_true', help="Only return the unwrapped bimi content of Authentication-Results", default=False)
+parser.add_argument("--indicator-only", action='store_true', help="Only return the content of BIMI-Indicator", default=False)
+parser.add_argument("--location-only", action='store_true', help="Only return the content of BIMI-Location", default=False)
+parser.add_argument("--wrap", help="Mail header wrap style (default: space)", choices=['space','tab','none'], default='space')
+parser.add_argument("--cache-dir", help="File cache directory (default: /tmp)", default='/tmp')
 args = parser.parse_args()
 
 ## https://stackoverflow.com/questions/11887762/how-do-i-compare-version-numbers-in-python
@@ -61,15 +64,23 @@ def gunzip(bytes):
     else:
         return(bytes)
 
-def get_tiny_svg(url):
+def get_tiny_svg(domain,selector,url):
     if not url.startswith("https://"):
         return(False)
-    r = requests.get(url, timeout=10, verify=True)
-    downloaded_svg = gunzip(r.content)
-    if len(downloaded_svg) > 32768:
-        return(False)
+    cache_file = args.cache_dir + "/bimi_" + domain + "_" + selector + ".svg"
+    if Path(cache_file).is_file():
+        with open(cache_file, 'rb') as file:
+            downloaded_svg = file.read()
+            file.close()
     else:
-        return(downloaded_svg)
+        r = requests.get(url, timeout=10, verify=True)
+        downloaded_svg = gunzip(r.content)
+        if len(downloaded_svg) > 32768:
+            return(False)
+        with open(cache_file, 'wb') as file:
+            file.write(downloaded_svg)
+            file.close()
+    return(downloaded_svg)
 
 def tag_value(tagval_string):
     ## Turn DKIM-style TXT records into dict
@@ -149,16 +160,28 @@ def qualifying_policy(domain):
             return(True)
     return(False)
 
-def indicator_header(tinysvg):
-    b64=base64.b64encode(tinysvg)
-    bimi_i_header = "BIMI Indicator: "
-    bimi_indicator = '\n'.join(textwrap.wrap(bimi_i_header + b64.decode(), width=77, initial_indent='', subsequent_indent=' '))
-    bimi_indicator = bimi_indicator[len(bimi_i_header):]
-    return(bimi_indicator)
+def wrap_header(label,data,wrap):
+    if wrap == "none":
+        return(data)
+    if label == "BIMI-Indicator: ":
+        data = b64_wrap(label,data)
+    else:
+        data = Header(data,maxlinelen=78,header_name=label).encode()
+    if wrap == "tab":
+        data = tab_lines(data)
+    return(data)
+
+def b64_wrap(label,b64_str):
+    ## mail tools don't know how to wrap a raw b64 blob
+    data = '\n'.join(textwrap.wrap(label + b64_str, width=77, initial_indent='', subsequent_indent=' '))
+    data = data[len(label):]
+    return(data)
 
 def tab_lines(headers):
     out = ''
     sp = iter(headers.splitlines())
+    if sp == '':
+        return(x)
     for x in sp:
         if x[0] == " ":
             out = out + "\t" + x[1:] + "\n"
@@ -182,17 +205,35 @@ else:
     b = bimi_assert(args.domain,args.selector)
     if not b:
         bimi_result = "none"
+        if args.location_only:
+            sys.exit(1)
     else:
+        bimi_location = wrap_header("BIMI-Location: ","v=BIMI1; l=" + b.get("l") + "; a=" + b.get("a"),args.wrap)
+        if args.location_only:
+            print(bimi_location)
+            sys.exit(0)
         if len(b.get("l")) == 0:
             bimi_result = "declined"
         else:
-            tinysvg = get_tiny_svg(b.get("l"))
+            tinysvg = get_tiny_svg(args.domain,args.selector,b.get("l"))
             if not tinysvg:
                 bimi_result = "fail"
                 bimi_comment = " (problem downloading logo)"
             else:
                 bimi_result = "pass"
+                bimi_indicator = wrap_header("BIMI-Indicator: ",base64.b64encode(tinysvg).decode('utf-8'),args.wrap)
                 indicator_hash=hashlib.sha256(tinysvg).hexdigest()[-8:]
+
+if args.status_only:
+    print(bimi_result)
+    sys.exit(0)
+
+if args.indicator_only:
+    if not tinysvg:
+        sys.exit(1)
+    else:
+        print(bimi_indicator)
+        sys.exit(0)
 
 auth_results = "; bimi=" + bimi_result + bimi_comment + " header.d=" + args.domain
 if not bimi_result == "skipped":
@@ -201,23 +242,15 @@ if tinysvg:
     auth_results = auth_results + " policy.authority=" + policy_authority
     auth_results = auth_results + " policy.indicator-hash=" + indicator_hash
 
-auth_results_full = Header(args.authserv_id + auth_results,maxlinelen=78,header_name="Authentication-Results:").encode()
+if args.bimi_auth_only:
+    print(auth_results)
+    sys.exit(0)
 
-if b:
-    bimi_location =  "v=BIMI1; l=" + b.get("l") + "; a=" + b.get("a")
-    bimi_location = Header(bimi_location,maxlinelen=78,header_name="BIMI-Location:").encode()
-    if tinysvg:
-        bimi_indicator = indicator_header(tinysvg)
+auth_results_full = wrap_header("Authentication-Results: ",args.authserv_id + auth_results,args.wrap)
 
-if args.tab_headers:
-    if bimi_indicator:
-        print("BIMI-Indicator: " + tab_lines(bimi_indicator))
-    if bimi_location:
-        print("BIMI-Location: " + tab_lines(bimi_location))
-    print("Authentication-Results: " + tab_lines(auth_results_full))
-else:
-    if bimi_indicator:
-        print("BIMI-Indicator: " + bimi_indicator)
-    if bimi_location:
-        print("BIMI-Location: " + bimi_location)
-    print("Authentication-Results: " + auth_results_full)
+if bimi_indicator:
+    print("BIMI-Indicator: " + bimi_indicator)
+if bimi_location:
+    print("BIMI-Location: " + bimi_location)
+print("Authentication-Results: " + auth_results_full)
+sys.exit(0)
