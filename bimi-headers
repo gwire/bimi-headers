@@ -237,6 +237,11 @@ def validate_bimi_cert(domain,selector,certs,root_certs):
                         subject_cert = pem
         if not name_match:
             intermediate_certs.append(pem)
+
+    ## pyopenssl 19 doesn't support intermediate certificates, and cryptography 2.8 has
+    ## no chain validation at all
+    ## so, as a workaroud, we validate the indermediate certificates against the root
+    ## and temporarily add them to the root
     if tmp_image_file:
         try:
             root_store = crypto.X509Store()
@@ -249,7 +254,7 @@ def validate_bimi_cert(domain,selector,certs,root_certs):
                 store_ctx = crypto.X509StoreContext(root_store, test_intermediate)
                 if store_ctx.verify_certificate() == None:
                     root_store.add_cert(test_intermediate)
-                test_cert = crypto.load_certificate(crypto.FILETYPE_PEM,subject_cert)
+            test_cert = crypto.load_certificate(crypto.FILETYPE_PEM,subject_cert)
             store_ctx = crypto.X509StoreContext(root_store, test_cert)
             if store_ctx.verify_certificate() == None:
                 logging.debug("verified certificate")
