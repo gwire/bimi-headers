@@ -51,6 +51,7 @@ parser.add_argument("--selector", help="The selector (default: default)", defaul
 parser.add_argument("--authserv-id", help="Authetication-Results authserv-id (default: mailserver.local)", default="mailserver.local")
 parser.add_argument("--status-only", action='store_true', help="Only return the auth result", default=False)
 parser.add_argument("--bimi-auth-only", action='store_true', help="Only return the unwrapped bimi content of Authentication-Results", default=False)
+parser.add_argument("--auth-only", action='store_true', help="Only return the content of Authentication-Results", default=False)
 parser.add_argument("--indicator-only", action='store_true', help="Only return the content of BIMI-Indicator", default=False)
 parser.add_argument("--location-only", action='store_true', help="Only return the content of BIMI-Location", default=False)
 parser.add_argument("--wrap", help="Mail header wrap style (default: space)", choices=['space','tab','none'], default='space')
@@ -135,7 +136,7 @@ def get_l_auth(domain,selector,url):
         return(False)
     cache_file = args.cache_dir + "/bimi_auth_" + domain + "_" + selector + ".svg"
     if Path(cache_file).is_file():
-        with open(auth_cache_file, 'rb') as file:
+        with open(cache_file, 'rb') as file:
             downloaded_svg = file.read()
             file.close()
         return(downloaded_svg)
@@ -516,16 +517,18 @@ def main():
                         policy_authority = "pass"
                 if not bimi_logo_file:
                     bimi_logo_file = get_l(args.domain,args.selector,b.get("l"))
-                    if not bimi_logo_file:
+                    if bimi_logo_file:
+                        bimi_result = "pass"
+                        if b.get("a"):
+                            downloaded_certs = get_bimi_certs(args.domain,args.selector,b.get("a"))
+                            policy_authority = validate_bimi_cert(args.domain,args.selector,downloaded_certs,vmc_root)
+                    else:
                         bimi_result = "fail"
                         bimi_comment = " (problem downloading logo)"
-                    else:
-                        bimi_result = "pass"
-                        bimi_indicator = wrap_header("BIMI-Indicator: ",base64.b64encode(bimi_logo_file).decode('utf-8'),args.wrap)
-                        indicator_hash=hashlib.sha256(bimi_logo_file).hexdigest()[-8:]
-                    if b.get("a"):
-                        downloaded_certs = get_bimi_certs(args.domain,args.selector,b.get("a"))
-                        policy_authority = validate_bimi_cert(args.domain,args.selector,downloaded_certs,vmc_root)
+
+    if bimi_logo_file:
+        bimi_indicator = wrap_header("BIMI-Indicator: ",base64.b64encode(bimi_logo_file).decode('utf-8'),args.wrap)
+        indicator_hash=hashlib.sha256(bimi_logo_file).hexdigest()[-8:]
 
     if args.status_only:
         print(bimi_result)
@@ -543,13 +546,18 @@ def main():
         auth_results = auth_results + " header.selector=" + args.selector
     if bimi_logo_file:
         auth_results = auth_results + " policy.authority=" + policy_authority
-        auth_results = auth_results + " policy.indicator-hash=" + indicator_hash
+        if indicator_hash:
+            auth_results = auth_results + " policy.indicator-hash=" + indicator_hash
 
     if args.bimi_auth_only:
         print(auth_results)
-        return(False)
+        return(True)
 
     auth_results_full = wrap_header("Authentication-Results: ",args.authserv_id + auth_results,args.wrap)
+
+    if args.auth_only:
+        print(auth_results_full)
+        return(True)
 
     if bimi_indicator:
         print("BIMI-Indicator: " + bimi_indicator)
