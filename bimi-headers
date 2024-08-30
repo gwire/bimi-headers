@@ -8,6 +8,7 @@
 ## - svg validation
 
 import sys
+import logging
 import argparse
 import base64
 import email
@@ -36,7 +37,12 @@ parser.add_argument("--indicator-only", action='store_true', help="Only return t
 parser.add_argument("--location-only", action='store_true', help="Only return the content of BIMI-Location", default=False)
 parser.add_argument("--wrap", help="Mail header wrap style (default: space)", choices=['space','tab','none'], default='space')
 parser.add_argument("--cache-dir", help="File cache directory (default: /tmp)", default='/tmp')
-args = parser.parse_args()
+parser.add_argument("--debug", action='store_true', help="Show debug", default=False)
+args= parser.parse_args()
+
+if args.debug:
+    logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+
 
 ## https://stackoverflow.com/questions/11887762/how-do-i-compare-version-numbers-in-python
 def versiontuple(v):
@@ -92,6 +98,7 @@ def tag_value(tagval_string):
 
 def dmarc_policy(domain):
     if not is_public_hostname(domain):
+        logging.debug('DNS: %s not in publicsuffixlist',domain)
         return(False)
     try:
         if versiontuple(version('dnspython')) < versiontuple("2.0.0"):
@@ -108,7 +115,9 @@ def dmarc_policy(domain):
                         d["sp"] = d.get("p")
                     return(d)
     except (dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout) as e:
+        logging.debug('DMARC: DNS error requesting _dmarc.%s',domain)
         return(False)
+
     return(False)
 
 def bimi_assert(domain,selector):
@@ -128,11 +137,14 @@ def bimi_assert(domain,selector):
                         d["l"] = ""
                     return(d)
         if org_domain.casefold() == domain.casefold():
+            logging.debug('BIMI: No record for %s',selector + '._bimi.' + domain)
             return(False)
         else:
+            logging.debug('BIMI: No record for %s',selector + '._bimi.' + domain)
             return(bimi_assert(org_domain,selector))
     except (dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout) as e:
         if org_domain.casefold() != domain.casefold():
+            logging.debug('BIMI:DNS error for %s',selector + '._bimi.' + domain)
             return(bimi_assert(org_domain,selector))
     return(False)
 
@@ -144,12 +156,15 @@ def qualifying_policy(domain):
             if policy.get("sp") not in ["none"]:
                 if policy.get("p") in ["quarantine"]:
                     if policy.get("pct") not in ["100"]:
+                        logging.debug('DMARC: pct=%s',policy.get("pct"))
                         return(False)
                 if org_domain.casefold() == domain.casefold():
                     return(True)
             else:
+                logging.debug('DMARC: sp=none for %s', domain)
                 return(False)
         else:
+            logging.debug('DMARC: p=none for %s', domain)
             return(False)
     else:
         if org_domain.casefold() != domain.casefold():
@@ -158,6 +173,7 @@ def qualifying_policy(domain):
     if org_domain.casefold() != domain.casefold():
         if qualifying_policy(org_domain):
             return(True)
+    logging.debug('DMARC: no record for _dmarc.%s', domain)
     return(False)
 
 def wrap_header(label,data,wrap):
